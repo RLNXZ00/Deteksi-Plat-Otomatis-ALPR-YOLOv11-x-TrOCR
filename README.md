@@ -97,9 +97,9 @@ Pengujian dilakukan pada test set independen berisi 372 gambar plat nomor Indone
 ```text
 ├── Python Notebook/
 │   ├── Master_Pipeline_E2E.ipynb        # Notebook evaluasi E2E Pipeline lengkap
-│   ├── YOLOv11_Plate_Detector.ipynb      # Notebook pelatihan detektor YOLOv11
-│   └── TrOCR_Text_Extraction.ipynb       # Notebook pelatihan recognizer TrOCR
-├── simulasi_kamera_laptop.py             # Script simulasi kamera webcam live + GUI Pop-up
+│   ├── YOLOv11_Plate_Detector.ipynb     # Notebook pelatihan detektor YOLOv11
+│   └── TrOCR_Text_Extraction.ipynb      # Notebook pelatihan recognizer TrOCR
+├── simulasi_kamera_laptop.py            # Script simulasi kamera webcam live + GUI Pop-up
 ├── jalankan_simulasi_kamera.bat         # Launcher Windows 1-klik untuk simulasi kamera
 ├── requirements.txt                     # Daftar dependensi library Python
 ├── riwayat_deteksi.csv                  # File log riwayat pembacaan plat nomor
