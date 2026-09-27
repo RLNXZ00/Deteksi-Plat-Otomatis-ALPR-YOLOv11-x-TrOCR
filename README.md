@@ -131,8 +131,8 @@ Pengujian dilakukan pada test set independen berisi 372 gambar plat nomor Indone
 
 ### 1. Clone Repositori
 ```bash
-git clone https://github.com/username/alpr-indonesia.git](https://github.com/RLNXZ00/Deteksi-Plat-Otomatis-ALPR-YOLOv11-x-TrOCR.git
-cd alpr-indonesia
+git clone https://github.com/RLNXZ00/Deteksi-Plat-Otomatis-ALPR-YOLOv11-x-TrOCR.git
+cd Deteksi-Plat-Otomatis-ALPR-YOLOv11-x-TrOCR
 ```
 
 ### 2. Buat Lingkungan Virtual (Disarankan)
