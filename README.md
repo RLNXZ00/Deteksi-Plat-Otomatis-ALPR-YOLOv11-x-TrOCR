@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🚗🇮🇩 ALPR Indonesia: End-to-End Automatic License Plate Recognition System
+# ALPR Indonesia: End-to-End Automatic License Plate Recognition System
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
@@ -192,11 +192,19 @@ Buka [Python Notebook/Master_Pipeline_E2E.ipynb](Python%20Notebook/Master_Pipeli
 
 ## 🔍 Logika Post-Processing TNKB
 
-Aturan Tanda Nomor Kendaraan Bermotor (TNKB) di Indonesia memiliki struktur gramatikal yang kaku:
-$$\underbrace{\text{[1--2 Huruf]}}_{\text{Kode Wilayah}} \quad \underbrace{\text{[1--4 Angka]}}_{\text{Nomor Polisi}} \quad \underbrace{\text{[1--3 Huruf]}}_{\text{Seri Akhir}}$$
+Aturan Tanda Nomor Kendaraan Bermotor (TNKB) di Indonesia memiliki struktur gramatikal baku:
+
+```text
+┌────────────────────────┐   ┌────────────────────────┐   ┌────────────────────────┐
+│      KODE WILAYAH      │   │      NOMOR POLISI      │   │       SERI AKHIR       │
+│     (1 - 2 Huruf)      │ + │     (1 - 4 Digit)      │ + │     (1 - 3 Huruf)      │
+│     Contoh: B, AB      │   │    Contoh: 1234, 505   │   │     Contoh: WVL, XYZ   │
+└────────────────────────┘   └────────────────────────┘   └────────────────────────┘
+                       Contoh Hasil Gabungan: B 505 WVL
+```
 
 ### Matriks Disambiguasi Karakter:
-| Karakter Asli | Jika Berada di Bagian Wilayah / Seri (Huruf) | Jika Berada di Bagian Nomor (Angka) |
+| Karakter Hasil OCR | Jika Berada di Bagian Huruf (Wilayah / Seri) | Jika Berada di Bagian Angka (Nomor Polisi) |
 | :---: | :---: | :---: |
 | **`0`** (Nol) | Dikonversi ke **`O`** atau **`D`** | Tetap **`0`** |
 | **`1`** (Satu) | Dikonversi ke **`I`** atau **`L`** | Tetap **`1`** |
@@ -208,7 +216,7 @@ $$\underbrace{\text{[1--2 Huruf]}}_{\text{Kode Wilayah}} \quad \underbrace{\text
 | **`I` / `L`** | Tetap **`I` / `L`** | Dikonversi ke **`1`** |
 | **`B`** (Huruf B) | Tetap **`B`** | Dikonversi ke **`8`** |
 
-Algoritma **Exhaustive Search** memeriksa semua kemungkinan panjang substring wilayah ($1 \le L_1 \le 2$), angka ($1 \le L_2 \le 4$), dan seri ($1 \le L_3 \le 3$), lalu memilih kandidat dengan nilai edit distance terkecil terhadap teks mentah TrOCR.
+Algoritma **Exhaustive Search** mengevaluasi seluruh kombinasi panjang kode wilayah (1–2 huruf), nomor polisi (1–4 digit), dan seri (1–3 huruf), lalu memilih kandidat valid dengan jumlah perubahan karakter minimum terhadap teks mentah TrOCR.
 
 ---
 
@@ -220,7 +228,7 @@ Algoritma **Exhaustive Search** memeriksa semua kemungkinan panjang substring wi
   - Storage: 3 GB ruang kosong.
   - OS: Windows 10/11 atau Ubuntu 20.04+.
 - **Rekomendasi (GPU)**:
-  - GPU: NVIDIA GTX 1660 / RTX 3050 ke atas (VRAM $\ge$ 4 GB).
+  - GPU: NVIDIA GTX 1660 / RTX 3050 ke atas (VRAM ≥ 4 GB).
   - RAM: 16 GB.
   - CUDA: Version 11.8 atau 12.x.
 
