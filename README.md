@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🚗🇮🇩 ALPR Indonesia: End-to-End Automatic License Plate Recognition System
+# ALPR Indonesia: End-to-End Automatic License Plate Recognition System
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
@@ -31,19 +31,19 @@ Sistem memadukan ketangguhan **YOLOv11s** (*state-of-the-art detector*) untuk lo
 
 ## ✨ Fitur Utama
 
-- 🎯 **2-Stage State-of-the-Art Architecture**:
+- **2-Stage State-of-the-Art Architecture**:
   - **Stage 1 (Deteksi)**: YOLOv11s dilatih khusus pada dataset plat nomor Indonesia (**mAP@50: 95.11%**, Precision: 87.56%, Recall: 90.71%).
   - **Stage 2 (Rekognisi)**: TrOCR Base (*Vision Transformer*) membaca teks plat tanpa memerlukan segmentasi karakter per-huruf (*end-to-end sequence recognition*).
-- 📐 **Asymmetric Smart Padding (8% Horizontal, 5% Vertical)**: Mencegah huruf awal (e.g. `B`, `D`, `AB`) dan huruf akhir seri terpotong saat proses crop bounding box.
-- 🔄 **Two-Line Fallback Mechanism**: Jika OCR membaca baris bawah (angka bulan/tahun pajak seperti `1219`), pipeline otomatis melakukan fallback crop 75% area atas plat untuk membaca nomor polisi utama.
-- 🧠 **Exhaustive Min-Changes Disambiguation Engine**: Algoritma cerdas yang mengevaluasi seluruh kemungkinan segmentasi `[Wilayah] [Angka] [Seri]` dan memilih kandidat dengan perubahan karakter minimum yang valid secara aturan TNKB (lulus 14/14 skenario unit test).
-- 🎥 **Simulasi Kamera Laptop Real-Time (30 FPS Lancar di CPU)**:
+- **Asymmetric Smart Padding (8% Horizontal, 5% Vertical)**: Mencegah huruf awal (e.g. `B`, `D`, `AB`) dan huruf akhir seri terpotong saat proses crop bounding box.
+- **Two-Line Fallback Mechanism**: Jika OCR membaca baris bawah (angka bulan/tahun pajak seperti `1219`), pipeline otomatis melakukan fallback crop 75% area atas plat untuk membaca nomor polisi utama.
+- **Exhaustive Min-Changes Disambiguation Engine**: Algoritma cerdas yang mengevaluasi seluruh kemungkinan segmentasi `[Wilayah] [Angka] [Seri]` dan memilih kandidat dengan perubahan karakter minimum yang valid secara aturan TNKB (lulus 14/14 skenario unit test).
+- **Simulasi Kamera Laptop Real-Time (30 FPS Lancar di CPU)**:
   - *Asynchronous Multithreading*: Inferensi OCR berjalan di background thread sehingga preview webcam tidak freeze/lag.
   - *CPU-Optimized*: Menggunakan *Greedy Search Decoding* (`num_beams=1`), memangkas latensi OCR dari 10.3s menjadi ~1.5s pada laptop standar (Intel Core i5 tanpa GPU diskrit).
-- 🪟 **Dual GUI & Pop-up System**:
+- **Dual GUI & Pop-up System**:
   - **Jendela Pop-up Native**: Menampilkan foto crop plat resolusi tinggi, plat nomor dengan spasi rapi, badge validasi hijau/oranye, confidence, dan latensi komputasi.
   - **Futuristic Glassmorphism HUD**: Overlay neon pada frame kamera dengan bounding box dinamis dan ringkasan deteksi.
-- 📊 **Pencatatan Otomatis ke CSV**: Hasil deteksi valid otomatis direkam ke [riwayat_deteksi.csv](riwayat_deteksi.csv) lengkap dengan timestamp dan confidence score.
+- **Pencatatan Otomatis ke CSV**: Hasil deteksi valid otomatis direkam ke [riwayat_deteksi.csv](riwayat_deteksi.csv) lengkap dengan timestamp dan confidence score.
 
 ---
 
