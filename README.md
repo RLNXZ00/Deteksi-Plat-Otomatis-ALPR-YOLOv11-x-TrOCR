@@ -1,6 +1,6 @@
 <div align="center">
 
-# ALPR Indonesia: End-to-End Automatic License Plate Recognition System
+# 🚗🇮🇩 ALPR Indonesia: End-to-End Automatic License Plate Recognition System
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
@@ -51,19 +51,19 @@ Sistem memadukan ketangguhan **YOLOv11s** (*state-of-the-art detector*) untuk lo
 
 ```mermaid
 flowchart TD
-    A[Input: Frame Kamera / Citra Kendaraan] --> B[YOLOv11s Plate Detector]
-    B -->|Bounding Box + Conf >= 0.20| C[Asymmetric Crop & Padding\n+8% Lebar, +5% Tinggi]
-    C --> D[TrOCR Base OCR Recognizer]
-    D --> E{Apakah Hasil Valid TNKB\natau Hanya Angka Pajak?}
-    E -->|Angka Pajak / Tidak Valid| F[Fallback: Crop 75% Area Atas]
-    F --> G[TrOCR Secondary Inference]
-    E -->|Valid / Karakter Lengkap| H[Post-Processing & Disambiguation Engine]
+    A["Input: Frame Kamera / Citra Kendaraan"] --> B["YOLOv11s Plate Detector"]
+    B -->|"Bounding Box (Conf ≥ 0.20)"| C["Asymmetric Crop & Padding<br/>(+8% Lebar, +5% Tinggi)"]
+    C --> D["TrOCR Base OCR Recognizer"]
+    D --> E{"Apakah Hasil Valid TNKB<br/>atau Angka Pajak?"}
+    E -->|"Angka Pajak / Non-Valid"| F["Fallback: Crop 75% Area Atas"]
+    F --> G["TrOCR Secondary Inference"]
+    E -->|"Valid / Karakter Lengkap"| H["Post-Processing & Disambiguation"]
     G --> H
-    H --> I[Exhaustive Minimum-Changes Search\nKoreksi Posisi Huruf/Angka Sesuai Pola TNKB]
-    I --> J{Validasi Regex TNKB\n^[A-Z]{1,2} [0-9]{1,4} [A-Z]{1,3}$}
-    J -->|Valid| K[Format Output: B 1234 XYZ]
-    J -->|Non-Standar| L[Format Output Non-Standar]
-    K --> M[GUI Pop-up Window + Frame HUD + CSV Logger]
+    H --> I["Exhaustive Min-Changes Search<br/>Koreksi Posisi Huruf & Angka"]
+    I --> J{"Validasi Aturan TNKB<br/>Format: Wilayah - Nomor - Seri"}
+    J -->|"Format Valid"| K["Output Standar: B 1234 XYZ"]
+    J -->|"Format Khusus"| L["Output Format Non-Standar"]
+    K --> M["GUI Pop-up Window + Frame HUD + CSV Logger"]
     L --> M
 ```
 
