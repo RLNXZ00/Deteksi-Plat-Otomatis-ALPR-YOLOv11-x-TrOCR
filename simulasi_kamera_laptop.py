@@ -60,18 +60,64 @@ import torch
 from PIL import Image
 from ultralytics import YOLO
 from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+import argparse
 
-# Optimasi CPU: Batasi thread PyTorch agar kamera lancar dan CPU tidak 100% tersedot
-torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
+# Deteksi lingkungan Kaggle
+IS_KAGGLE = 'KAGGLE_KERNEL_RUN_TYPE' in os.environ or Path('/kaggle').exists()
 
-# ─── 1. KONFIGURASI PATH MODEL & ASSETS ─────────────────────────────────────────
+# Optimasi CPU: Hanya batasi thread jika berjalan di CPU (agar tidak membatasi kinerja Kaggle GPU)
+if not torch.cuda.is_available():
+    torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
+
+# ─── 1. KONFIGURASI PATH MODEL & ASSETS (LOKAL & KAGGLE AUTO-RESOLVER) ─────────
 BASE_DIR = Path(__file__).resolve().parent
-YOLO_WEIGHT_PATH = BASE_DIR / "Plate Detector Weight" / "yolo_plate_exp_c_best.pt"
-TROCR_DIR_PATH   = BASE_DIR / "OCR Extraction Text Weight EXP 2"
+
+def resolve_weight_path(rel_path, filename):
+    """Mencari file bobot baik di folder lokal maupun di dataset Kaggle (/kaggle/input/**)."""
+    local_path = BASE_DIR / rel_path
+    if local_path.exists():
+        return local_path
+
+    # Cari di folder Kaggle Input
+    if Path("/kaggle/input").exists():
+        matches = list(Path("/kaggle/input").rglob(filename))
+        if matches:
+            print(f"🔍 [Kaggle Path Found]: {matches[0]}")
+            return matches[0]
+
+    # Cari di folder Kaggle Working
+    if Path("/kaggle/working").exists():
+        matches = list(Path("/kaggle/working").rglob(filename))
+        if matches:
+            return matches[0]
+
+    return local_path
+
+def resolve_trocr_dir(rel_path, dir_name):
+    """Mencari folder model TrOCR baik di lokal maupun di Kaggle."""
+    local_path = BASE_DIR / rel_path
+    if local_path.exists() and (local_path / "model.safetensors").exists():
+        return local_path
+
+    if Path("/kaggle/input").exists():
+        for p in Path("/kaggle/input").rglob(dir_name):
+            if p.is_dir() and (p / "model.safetensors").exists():
+                print(f"🔍 [Kaggle TrOCR Found]: {p}")
+                return p
+
+    if Path("/kaggle/working").exists():
+        for p in Path("/kaggle/working").rglob(dir_name):
+            if p.is_dir() and (p / "model.safetensors").exists():
+                return p
+
+    return local_path
+
+YOLO_WEIGHT_PATH = resolve_weight_path(Path("Plate Detector Weight") / "yolo_plate_exp_c_best.pt", "yolo_plate_exp_c_best.pt")
+TROCR_DIR_PATH   = resolve_trocr_dir(Path("OCR Extraction Text Weight EXP 2"), "OCR Extraction Text Weight EXP 2")
 
 # Fallback ke Exp-B jika Exp-C belum dipindahkan
 if not YOLO_WEIGHT_PATH.exists():
-    fallback_b = BASE_DIR / "Plate Detector Weight" / "yolo_plate_exp_b_best.pt"
+    fallback_b = resolve_weight_path(Path("Plate Detector Weight") / "yolo_plate_exp_b_best.pt", "yolo_plate_exp_b_best.pt")
     if fallback_b.exists():
         YOLO_WEIGHT_PATH = fallback_b
 
@@ -192,27 +238,47 @@ def crop_plate(frame_bgr, xyxy):
 
 # ─── 5. KELAS ALPR ENGINE DENGAN ASYNC THREADING ──────────────────────────────
 class AlprCameraEngine:
-    def __init__(self, yolo_path, trocr_dir):
-        print("\n" + "═" * 60)
+    def __init__(self, yolo_path, trocr_dir, device="auto", num_beams=1):
+        print("\n" + "═" * 65)
         print("🚀 INISIALISASI SISTEM ALPR INDONESIA")
-        print("═" * 60)
+        print("═" * 65)
         
-        # Device auto selection (GPU jika ada, CPU jika laptop standar)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Device auto selection (Kaggle GPU CUDA atau CPU)
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
+
+        self.use_fp16 = (self.device == "cuda")
+        self.num_beams = num_beams
+
         print(f"  [Device]      : {self.device.upper()}")
+        if self.device == "cuda":
+            gpu_name = torch.cuda.get_device_name(0)
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            print(f"  [GPU Model]   : {gpu_name}")
+            print(f"  [GPU VRAM]    : {vram_gb:.2f} GB")
+            print(f"  [Precision]   : FP16 (Half Precision Tensor Cores Active ⚡)")
+        else:
+            print(f"  [Precision]   : FP32 (CPU Standard)")
 
         # 1. Load YOLO
-        print(f"  [Load YOLO]   : {yolo_path.name} ...")
+        yolo_name = yolo_path.name if isinstance(yolo_path, Path) else yolo_path
+        print(f"  [Load YOLO]   : {yolo_name} ...")
         self.yolo = YOLO(str(yolo_path))
         print("  [YOLO Ready]  : ✅")
 
         # 2. Load TrOCR
-        print(f"  [Load TrOCR]  : {trocr_dir.name} ...")
+        trocr_name = trocr_dir.name if isinstance(trocr_dir, Path) else trocr_dir
+        print(f"  [Load TrOCR]  : {trocr_name} ...")
         self.processor = TrOCRProcessor.from_pretrained(str(trocr_dir))
-        self.ocr_model = VisionEncoderDecoderModel.from_pretrained(str(trocr_dir)).to(self.device)
+        self.ocr_model = VisionEncoderDecoderModel.from_pretrained(str(trocr_dir))
+        if self.use_fp16:
+            self.ocr_model = self.ocr_model.half()
+        self.ocr_model = self.ocr_model.to(self.device)
         self.ocr_model.eval()
         print("  [TrOCR Ready] : ✅")
-        print("═" * 60 + "\n")
+        print("═" * 65 + "\n")
 
         # Status & State
         self.last_ocr_time   = 0
@@ -222,15 +288,19 @@ class AlprCameraEngine:
         self.detected_history = []
 
     def recognize_crop(self, crop_rgb):
-        """Membaca teks dari crop RGB menggunakan TrOCR."""
+        """Membaca teks dari crop RGB menggunakan TrOCR (Didukung FP16 di GPU Kaggle)."""
         try:
             pil_img = Image.fromarray(crop_rgb)
-            pixel_values = self.processor(pil_img, return_tensors="pt").pixel_values.to(self.device)
+            pixel_values = self.processor(pil_img, return_tensors="pt").pixel_values
+            if self.use_fp16:
+                pixel_values = pixel_values.half()
+            pixel_values = pixel_values.to(self.device)
+
             with torch.no_grad():
                 generated_ids = self.ocr_model.generate(
                     pixel_values,
                     max_new_tokens=12,
-                    num_beams=1,
+                    num_beams=self.num_beams,
                     early_stopping=True,
                 )
             raw_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
@@ -243,9 +313,13 @@ class AlprCameraEngine:
                 top_h = int(crop_rgb.shape[0] * 0.75)
                 top_crop = crop_rgb[:top_h, :]
                 top_pil = Image.fromarray(top_crop)
-                top_pixels = self.processor(top_pil, return_tensors="pt").pixel_values.to(self.device)
+                top_pixels = self.processor(top_pil, return_tensors="pt").pixel_values
+                if self.use_fp16:
+                    top_pixels = top_pixels.half()
+                top_pixels = top_pixels.to(self.device)
+
                 with torch.no_grad():
-                    top_ids = self.ocr_model.generate(top_pixels, max_new_tokens=12, num_beams=1)
+                    top_ids = self.ocr_model.generate(top_pixels, max_new_tokens=12, num_beams=self.num_beams)
                 top_raw = self.processor.batch_decode(top_ids, skip_special_tokens=True)[0]
                 top_pp = postprocess_plate(top_raw)
                 if top_pp['valid'] or (any(c.isalpha() for c in top_pp['final']) and len(top_pp['final']) >= 4):
@@ -498,51 +572,79 @@ def render_ocr_popup(res):
     return canvas
 
 
-# ─── 7. MAIN RUNNER (WEBCAM LOOP) ──────────────────────────────────────────────
-def run_laptop_camera(camera_index=0):
-    if not YOLO_WEIGHT_PATH.exists():
-        print(f"❌ Error: File bobot YOLO tidak ditemukan di:\n   {YOLO_WEIGHT_PATH}")
-        return
+# ─── 7. UNIVERSAL RUNNER (WEBCAM LAPTOP & KAGGLE GPU VIDEO/IMAGE) ──────────────
+def run_video_or_webcam(engine, source="0", output_path=None, is_headless=False, flip_mode=0, imgsz=None):
+    if imgsz is None:
+        imgsz = 640 if engine.device == "cuda" else YOLO_IMGSZ
 
-    if not TROCR_DIR_PATH.exists() or not (TROCR_DIR_PATH / "model.safetensors").exists():
-        print(f"❌ Error: Folder bobot TrOCR tidak lengkap di:\n   {TROCR_DIR_PATH}")
-        return
+    is_webcam = False
+    if isinstance(source, int) or (isinstance(source, str) and source.isdigit()):
+        is_webcam = True
+        cam_idx = int(source)
+        print(f"📷 Membuka Kamera / Webcam index {cam_idx}...")
+        cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW) if sys.platform.startswith('win') else cv2.VideoCapture(cam_idx)
+        if not cap.isOpened():
+            print(f"\n❌ Gagal mengakses kamera index {cam_idx}!")
+            if IS_KAGGLE or is_headless:
+                print("💡 [Info Kaggle GPU]: Lingkungan server cloud tidak memiliki perangkat webcam fisik.")
+                print("   Silakan jalankan simulasi menggunakan file video atau gambar:")
+                print("   python simulasi_kamera_laptop.py --source /path/ke/video.mp4\n")
+            else:
+                print("   Pastikan webcam tidak sedang dipakai aplikasi lain (Zoom, Teams, dsb).\n")
+            return
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        total_frames = 0
+        fps_in = 30.0
+    else:
+        src_path = Path(source)
+        if not src_path.exists():
+            print(f"❌ File video tidak ditemukan di: {source}")
+            return
+        print(f"🎬 Membuka File Video: {src_path.name}...")
+        cap = cv2.VideoCapture(str(src_path))
+        if not cap.isOpened():
+            print(f"❌ Gagal membaca file video: {source}")
+            return
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps_in = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        flip_mode = None  # File video tidak dibalik orientasinya
 
-    # Inisialisasi Engine
-    engine = AlprCameraEngine(YOLO_WEIGHT_PATH, TROCR_DIR_PATH)
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    print("📷 Membuka Kamera Laptop / Webcam...")
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW) if sys.platform.startswith('win') else cv2.VideoCapture(camera_index)
+    # Setup VideoWriter untuk menyimpan hasil video beranotasi
+    writer = None
+    if not is_webcam or output_path:
+        out_p = Path(output_path) if output_path else BASE_DIR / "output_alpr.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(str(out_p), fourcc, fps_in, (width, height))
+        print(f"💾 Video hasil beranotasi akan disimpan ke: {out_p}")
 
-    if not cap.isOpened():
-        print(f"❌ Gagal mengakses kamera index {camera_index}!")
-        print("   Tips: Pastikan webcam tidak sedang dipakai aplikasi lain (Zoom, Teams, dsb).")
-        return
-
-    # Set resolusi kamera (720p jika didukung)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-    window_name = "SIMULASI ALPR INDONESIA — KAMERA LAPTOP"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 1024, 600)
-
-    # Inisialisasi Pop-up Window Khusus Hasil OCR
+    window_name = "SIMULASI ALPR INDONESIA — LIVE CAM"
     popup_window_name = "POPUP HASIL DETEKSI OCR — ALPR"
-    show_popup = True
     popup_opened = False
+    show_popup = True
 
-    # Inisialisasi Orientasi Kamera
-    flip_mode = DEFAULT_FLIP_MODE
+    if not is_headless:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, 1024, 600)
 
-    print("\n" + "═" * 60)
-    print("✅ KAMERA AKTIF! Arahkan plat nomor kendaraan ke kamera.")
-    print("   [Q] / [ESC] : Keluar")
-    print("   [SPACE]     : Simpan Foto Snapshot (Kamera + Pop-up)")
-    print("   [F]         : Putar / Balik Kamera (Flip Vertikal/Horizontal)")
-    print("   [P]         : Buka / Tutup Pop-up Window OCR")
-    print("   [T]         : Toggle Auto / Manual Scan")
-    print("═" * 60 + "\n")
+    print("\n" + "═" * 65)
+    if is_webcam:
+        print("✅ KAMERA AKTIF! Arahkan plat nomor kendaraan ke kamera.")
+        print("   [Q] / [ESC] : Keluar")
+        print("   [SPACE]     : Simpan Snapshot (Kamera + Pop-up)")
+        print("   [F]         : Putar / Balik Kamera (Flip Vertikal/Horizontal)")
+        print("   [P]         : Buka / Tutup Pop-up Window OCR")
+        print("   [T]         : Toggle Auto / Manual Scan")
+    else:
+        print(f"🚀 MEMPROSES VIDEO: {total_frames} total frame | FPS: {fps_in:.1f}")
+        if is_headless:
+            print("   Mode Headless (Kaggle/Server): Preview GUI dimatikan, progres dicetak ke konsol.")
+        else:
+            print("   Tekan [Q] untuk menghentikan proses video lebih awal.")
+    print("═" * 65 + "\n")
 
     prev_time = time.time()
     fps = 0.0
@@ -553,27 +655,27 @@ def run_laptop_camera(camera_index=0):
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("⚠️ Tidak ada frame dari kamera, mencoba membaca ulang...")
-                time.sleep(0.1)
-                continue
+                if not is_webcam:
+                    print(f"\n🏁 Pemrosesan video selesai! Total {frame_count} frame diproses.")
+                break
 
-            # Balik orientasi kamera jika terbalik
             if flip_mode is not None:
                 frame = cv2.flip(frame, flip_mode)
 
-            # Hitung FPS
             cur_time = time.time()
             fps = 1.0 / (cur_time - prev_time + 1e-6)
             prev_time = cur_time
-
-            # 1. Deteksi YOLO pada frame kamera (setiap 2 frame untuk menjaga kelancaran 30 FPS di CPU)
             frame_count += 1
-            if frame_count % 2 == 0 or not cached_detections:
+
+            # 1. Deteksi YOLO (Di GPU diproses setiap frame; di CPU setiap 2 frame)
+            skip_rate = 1 if engine.device == "cuda" else 2
+            if frame_count % skip_rate == 0 or not cached_detections:
                 results = engine.yolo(
                     frame,
                     conf=YOLO_CONF_THRESHOLD,
                     iou=YOLO_IOU_THRESHOLD,
-                    imgsz=YOLO_IMGSZ,
+                    imgsz=imgsz,
+                    device=engine.device,
                     verbose=False
                 )[0]
 
@@ -585,90 +687,203 @@ def run_laptop_camera(camera_index=0):
 
             detections = cached_detections
 
-            # 2. Jika ada plat terdeteksi, jadwalkan OCR
+            # 2. Pemicu OCR jika ada plat terdeteksi
             if detections:
                 best_det = max(detections, key=lambda d: d['conf'])
                 crop_rgb, bbox_padded = crop_plate(frame, best_det['xyxy'])
 
-                # Pemicu Auto-Scan dengan Cooldown
                 now = time.time()
-                if engine.auto_scan_mode and (now - engine.last_ocr_time > OCR_COOLDOWN_SEC) and not engine.is_ocr_busy:
+                cooldown = 0.2 if engine.device == "cuda" else OCR_COOLDOWN_SEC
+                if engine.auto_scan_mode and (now - engine.last_ocr_time > cooldown) and not engine.is_ocr_busy:
                     engine.last_ocr_time = now
                     engine.trigger_ocr_async(crop_rgb, best_det['conf'], bbox_padded)
 
-            # 3. Gambar HUD dan Overlay Visual pada Kamera Utama
+            # 3. Gambar HUD dan Overlay Visual
             draw_futuristic_hud(frame, engine, fps, detections)
 
-            # Tampilkan Window Kamera Utama
-            cv2.imshow(window_name, frame)
+            # 4. Tulis ke file video jika writer aktif
+            if writer is not None:
+                writer.write(frame)
 
-            # Tampilkan Pop-up Window Khusus Hasil OCR jika ada hasil pembacaan
-            if show_popup and engine.latest_result:
-                popup_canvas = render_ocr_popup(engine.latest_result)
-                if not popup_opened:
-                    cv2.namedWindow(popup_window_name, cv2.WINDOW_NORMAL)
-                    cv2.resizeWindow(popup_window_name, 560, 370)
-                    popup_opened = True
-
-                try:
-                    if cv2.getWindowProperty(popup_window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                        cv2.imshow(popup_window_name, popup_canvas)
-                    else:
-                        show_popup = False
-                        popup_opened = False
-                except Exception:
-                    pass
-
-            # 4. Tangani Input Keyboard
-            key = cv2.waitKey(1) & 0xFF
-            if key in [ord('q'), ord('Q'), 27]:  # 27 = ESC
-                print("\n🛑 Simulasi dihentikan oleh pengguna.")
-                break
-
-            elif key == ord(' '):  # SPACEBAR = Snapshot
-                now_fn = datetime.now().strftime("%Y%m%d_%H%M%S")
-                snap_path = SCREENSHOTS_DIR / f"capture_{now_fn}_camera.jpg"
-                cv2.imwrite(str(snap_path), frame)
-                print(f"📸 Snapshot kamera disimpan ke: {snap_path}")
-
-                if engine.latest_result:
-                    popup_snap = render_ocr_popup(engine.latest_result)
-                    popup_path = SCREENSHOTS_DIR / f"capture_{now_fn}_popup_ocr.jpg"
-                    cv2.imwrite(str(popup_path), popup_snap)
-                    print(f"📸 Snapshot popup OCR disimpan ke: {popup_path}")
-
-            elif key in [ord('f'), ord('F')]:  # F = Flip Kamera
-                flip_cycle = [0, -1, 1, None]
-                cur_idx = flip_cycle.index(flip_mode) if flip_mode in flip_cycle else -1
-                flip_mode = flip_cycle[(cur_idx + 1) % len(flip_cycle)]
-                desc = {0: "Flip Vertikal (Atas-Bawah)", -1: "Putar 180 Derajat", 1: "Flip Horizontal (Mirror)", None: "Normal (Tanpa Flip)"}
-                print(f"🔄 Orientasi Kamera Diubah: {desc[flip_mode]}")
-
-            elif key in [ord('p'), ord('P')]:  # P = Toggle Pop-up Window
-                show_popup = not show_popup
-                status_p = "DITAMPILKAN" if show_popup else "DISEMBUNYIKAN"
-                print(f"🪟 Pop-up window hasil OCR: {status_p}")
-                if not show_popup and popup_opened:
+            # 5. Output Display atau Console Progress
+            if is_headless:
+                if frame_count % 30 == 0 or frame_count == total_frames:
+                    pct = (frame_count / total_frames * 100) if total_frames > 0 else 0
+                    last_txt = engine.latest_result.get('formatted', '-') if engine.latest_result else '-'
+                    print(f"  ⚡ [{pct:5.1f}%] Frame {frame_count}/{total_frames} | FPS: {fps:4.1f} | Plat Terakhir: {last_txt}")
+            else:
+                cv2.imshow(window_name, frame)
+                if show_popup and engine.latest_result:
+                    popup_canvas = render_ocr_popup(engine.latest_result)
+                    if not popup_opened:
+                        cv2.namedWindow(popup_window_name, cv2.WINDOW_NORMAL)
+                        cv2.resizeWindow(popup_window_name, 560, 370)
+                        popup_opened = True
                     try:
-                        cv2.destroyWindow(popup_window_name)
+                        if cv2.getWindowProperty(popup_window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                            cv2.imshow(popup_window_name, popup_canvas)
+                        else:
+                            show_popup = False
+                            popup_opened = False
                     except Exception:
                         pass
-                    popup_opened = False
 
-            elif key in [ord('t'), ord('T')]:  # Toggle Mode
-                engine.auto_scan_mode = not engine.auto_scan_mode
-                mode_str = "AUTO SCAN" if engine.auto_scan_mode else "MANUAL SCAN"
-                print(f"🔄 Mode diganti menjadi: {mode_str}")
+                key = cv2.waitKey(1) & 0xFF
+                if key in [ord('q'), ord('Q'), 27]:
+                    print("\n🛑 Dihentikan oleh pengguna.")
+                    break
+                elif key == ord(' '):
+                    now_fn = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    snap_path = SCREENSHOTS_DIR / f"capture_{now_fn}_camera.jpg"
+                    cv2.imwrite(str(snap_path), frame)
+                    print(f"📸 Snapshot kamera disimpan ke: {snap_path}")
+                    if engine.latest_result:
+                        popup_snap = render_ocr_popup(engine.latest_result)
+                        popup_path = SCREENSHOTS_DIR / f"capture_{now_fn}_popup_ocr.jpg"
+                        cv2.imwrite(str(popup_path), popup_snap)
+                        print(f"📸 Snapshot popup OCR disimpan ke: {popup_path}")
+                elif key in [ord('f'), ord('F')]:
+                    flip_cycle = [0, -1, 1, None]
+                    cur_idx = flip_cycle.index(flip_mode) if flip_mode in flip_cycle else -1
+                    flip_mode = flip_cycle[(cur_idx + 1) % len(flip_cycle)]
+                    desc = {0: "Flip Vertikal (Atas-Bawah)", -1: "Putar 180 Derajat", 1: "Flip Horizontal (Mirror)", None: "Normal (Tanpa Flip)"}
+                    print(f"🔄 Orientasi Kamera Diubah: {desc[flip_mode]}")
+                elif key in [ord('p'), ord('P')]:
+                    show_popup = not show_popup
+                    status_p = "DITAMPILKAN" if show_popup else "DISEMBUNYIKAN"
+                    print(f"🪟 Pop-up window hasil OCR: {status_p}")
+                    if not show_popup and popup_opened:
+                        try:
+                            cv2.destroyWindow(popup_window_name)
+                        except Exception:
+                            pass
+                        popup_opened = False
+                elif key in [ord('t'), ord('T')]:
+                    engine.auto_scan_mode = not engine.auto_scan_mode
+                    mode_str = "AUTO SCAN" if engine.auto_scan_mode else "MANUAL SCAN"
+                    print(f"🔄 Mode diganti menjadi: {mode_str}")
 
     except KeyboardInterrupt:
         print("\n🛑 Dihentikan via terminal.")
-
     finally:
         cap.release()
-        cv2.destroyAllWindows()
+        if writer is not None:
+            writer.release()
+            print(f"✅ File video beranotasi berhasil disimpan.")
+        if not is_headless:
+            cv2.destroyAllWindows()
         print(f"📁 Log riwayat deteksi disimpan di: {LOG_CSV_PATH}")
         print("Terima kasih telah menggunakan sistem ALPR Indonesia!\n")
 
 
+def run_image_inference(engine, image_path, output_dir=None, imgsz=None):
+    """Menjalankan inferensi ALPR pada satu gambar atau satu folder gambar."""
+    if imgsz is None:
+        imgsz = 640 if engine.device == "cuda" else YOLO_IMGSZ
+
+    out_dir = Path(output_dir) if output_dir else SCREENSHOTS_DIR
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    img_p = Path(image_path)
+    if img_p.is_dir():
+        image_files = sorted(list(img_p.glob("*.jpg")) + list(img_p.glob("*.png")) + list(img_p.glob("*.jpeg")))
+    else:
+        image_files = [img_p]
+
+    print(f"\n🖼️ Memproses {len(image_files)} gambar menggunakan {engine.device.upper()}...")
+    for idx, fpath in enumerate(image_files, 1):
+        frame = cv2.imread(str(fpath))
+        if frame is None:
+            continue
+
+        # 1. Deteksi YOLO
+        results = engine.yolo(frame, conf=YOLO_CONF_THRESHOLD, iou=YOLO_IOU_THRESHOLD, imgsz=imgsz, device=engine.device, verbose=False)[0]
+        detections = []
+        for box in results.boxes:
+            xyxy = box.xyxy[0].cpu().numpy().astype(int).tolist()
+            conf = float(box.conf[0].cpu())
+            detections.append({'xyxy': xyxy, 'conf': conf})
+
+        # 2. OCR Synchronous untuk citra statis
+        if detections:
+            best_det = max(detections, key=lambda d: d['conf'])
+            crop_rgb, bbox_padded = crop_plate(frame, best_det['xyxy'])
+            res = engine.recognize_crop(crop_rgb)
+            plate_text = res['final']
+            formatted = " ".join(res['groups']) if res.get('groups') else plate_text
+            engine.latest_result = {
+                'text': plate_text,
+                'formatted': formatted,
+                'raw': res.get('raw', ''),
+                'valid': res['valid'],
+                'groups': res.get('groups'),
+                'conf': best_det['conf'],
+                'bbox': bbox_padded,
+                'crop_rgb': crop_rgb,
+                'time_ms': 0,
+                'timestamp': datetime.now().strftime("%H:%M:%S")
+            }
+            if res['valid']:
+                engine.save_to_csv(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), formatted, best_det['conf'])
+            print(f"  [{idx}/{len(image_files)}] {fpath.name} ➔ Plat: {formatted} (Conf: {best_det['conf']:.2f})")
+
+        # 3. Simpan hasil gambar beranotasi
+        draw_futuristic_hud(frame, engine, 0, detections)
+        save_path = out_dir / f"annotated_{fpath.name}"
+        cv2.imwrite(str(save_path), frame)
+
+    print(f"✅ Selesai! Gambar beranotasi disimpan di: {out_dir}")
+    print(f"📁 Log riwayat deteksi disimpan di: {LOG_CSV_PATH}\n")
+
+
+def run_laptop_camera(camera_index=0):
+    """Fungsi wrapper mundur (backwards compatibility)."""
+    engine = AlprCameraEngine(YOLO_WEIGHT_PATH, TROCR_DIR_PATH)
+    run_video_or_webcam(engine, source=str(camera_index), is_headless=False, flip_mode=DEFAULT_FLIP_MODE)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="ALPR Indonesia - Real-Time YOLOv11 & TrOCR (Laptop Webcam & Kaggle GPU)")
+    parser.add_argument("--source", type=str, default="0", help="Path file video (.mp4/.avi), gambar (.jpg/.png), folder gambar, atau webcam index 0 (default: 0)")
+    parser.add_argument("--output", type=str, default=None, help="Path output video atau folder output hasil (default: output_alpr.mp4)")
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Perangkat komputasi: auto / cuda / cpu")
+    parser.add_argument("--headless", action="store_true", help="Jalankan mode tanpa GUI display cv2.imshow (otomatis aktif di Kaggle)")
+    parser.add_argument("--imgsz", type=int, default=None, help="Ukuran resolusi YOLO (default: 640 untuk GPU, 384 untuk CPU)")
+    parser.add_argument("--beam", type=int, default=1, help="TrOCR beam search: 1 = Greedy Search (Cepat), 2-4 = Beam Search (Akurat)")
+    args = parser.parse_args()
+
+    # Cek bobot YOLO
+    if not YOLO_WEIGHT_PATH.exists():
+        print(f"❌ Error: File bobot YOLO tidak ditemukan di: {YOLO_WEIGHT_PATH}")
+        return
+
+    # Cek bobot TrOCR
+    if not TROCR_DIR_PATH.exists() or not (TROCR_DIR_PATH / "model.safetensors").exists():
+        print(f"❌ Error: Folder bobot TrOCR tidak lengkap di: {TROCR_DIR_PATH}")
+        return
+
+    # Inisialisasi Engine ALPR
+    engine = AlprCameraEngine(YOLO_WEIGHT_PATH, TROCR_DIR_PATH, device=args.device, num_beams=args.beam)
+
+    is_headless = args.headless or IS_KAGGLE or (not sys.platform.startswith('win') and 'DISPLAY' not in os.environ)
+
+    # Deteksi tipe sumber input:
+    src_str = str(args.source)
+    is_img = any(src_str.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.bmp'])
+    is_dir = Path(src_str).is_dir() if not src_str.isdigit() else False
+
+    if is_img or is_dir:
+        run_image_inference(engine, args.source, output_dir=args.output, imgsz=args.imgsz)
+    else:
+        run_video_or_webcam(
+            engine,
+            source=args.source,
+            output_path=args.output,
+            is_headless=is_headless,
+            flip_mode=DEFAULT_FLIP_MODE if args.source == "0" and sys.platform.startswith('win') else None,
+            imgsz=args.imgsz
+        )
+
+
 if __name__ == "__main__":
-    run_laptop_camera()
+    main()
